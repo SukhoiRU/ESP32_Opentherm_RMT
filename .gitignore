@@ -1,0 +1,4 @@
+build/
+test/
+managed_components/
+main/secure_config.h

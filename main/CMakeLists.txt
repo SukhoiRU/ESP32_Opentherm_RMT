@@ -1,0 +1,31 @@
+idf_component_register(
+    SRCS
+	"secure_config.h"
+    "main.cpp"
+    "telegram.h"
+    "telegram.cpp"
+	"gpio_control.h"
+	"gpio_control.cpp"
+	"thermo.h"
+	"thermo.cpp"
+	"wifi.cpp"
+	"telegram_client.h"
+	"telegram_client.cpp"
+	"logger.h"
+	"logger.cpp"
+	"ot_boiler.h"
+	"ot_boiler.cpp"
+	"boiler_task.h"
+	"boiler_task.cpp"
+	"mqtt.h"
+	"mqtt.cpp"
+	"tcp_server.h"
+	"tcp_server.cpp"
+	"rmt_opentherm.h"
+	"rmt_opentherm.cpp"
+	"room_thermostat.h"
+	"room_thermostat.cpp"
+    INCLUDE_DIRS "."
+	EMBED_TXTFILES
+	server_root_cert.pem
+)
