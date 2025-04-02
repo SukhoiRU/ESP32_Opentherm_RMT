@@ -41,12 +41,15 @@ extern "C" void	app_main()
 	esp_log_level_set("telegram", ESP_LOG_INFO);
 	esp_log_level_set("telegram_send", ESP_LOG_INFO);
 
-	esp_log_level_set("telegram_client", ESP_LOG_DEBUG);
+	esp_log_level_set("telegram_client", ESP_LOG_INFO);
 	esp_log_level_set("HTTP_CLIENT", ESP_LOG_WARN);
-	esp_log_level_set("logger", ESP_LOG_DEBUG);
-	esp_log_level_set("ot_boiler", ESP_LOG_NONE);
+	esp_log_level_set("logger", ESP_LOG_INFO);
+	esp_log_level_set("ot_boiler", ESP_LOG_INFO);
+	esp_log_level_set("boiler_task", ESP_LOG_INFO);
+	esp_log_level_set("tcp_server", ESP_LOG_INFO);
 	esp_log_level_set("gpio", ESP_LOG_NONE);
 	esp_log_level_set("i2c.master", ESP_LOG_NONE);
+	esp_log_level_set("rmt_opentherm", ESP_LOG_INFO);
 
 	//Инициализация NVS
 	esp_err_t ret = nvs_flash_init();
@@ -121,5 +124,5 @@ extern "C" void	app_main()
 	xTaskCreatePinnedToCore(gpio_control,	"gpio_control",		32768, nullptr, 1, nullptr, 1);	//100 Гц
 	xTaskCreatePinnedToCore(thermo,			"thermo",			4096, nullptr, 1, nullptr, 1);	//0.1 Гц
 	xTaskCreatePinnedToCore(logger,			"logger",			8192, nullptr, 1, nullptr, 1);	//Раз в 30 секунд
-	xTaskCreatePinnedToCore(boiler_task,	"boiler_task",		16384, nullptr, 1, nullptr, 1);	//1 Гц
+	xTaskCreatePinnedToCore(boiler_task,	"boiler_task",		16384, nullptr, 3, nullptr, 1);	//1 Гц
 }

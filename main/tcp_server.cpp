@@ -241,27 +241,6 @@ void	parse_tcp_message(const int sock)
 					}
 				}
 
-				//Включение термостата Baxi Ampera
-				else if(command == "baxi_ampera_thermostat"){
-					if(!j.contains("thermostat"))				response	= {{"result", "Отсутствует thermostat"}};
-					else if(!j.at("thermostat").is_object())	response	= {{"result", "thermostat не объект"}};
-					else{
-						json	thermostat	= j.at("thermostat");
-
-						//Постановка сообщения в очередь
-						fromTCP_to_ot*	msg	= new fromTCP_to_ot(TCP_message_t::baxi_ampera_thermostat, thermostat);
-						xQueueGenericSend(from_TCP_ot_queue, &msg, 10, queueSEND_TO_FRONT);
-
-						//Ожидание ответа
-						toTCP_from_ot*	boiler_response	= nullptr;
-						if(xQueueReceive(to_TCP_ot_queue, &boiler_response, pdMS_TO_TICKS(5000)) == pdPASS){
-							response	= {{"result", "ok"}, {"response", boiler_response->response}};
-							if(boiler_response)	delete boiler_response;
-						}
-						else{response	= {{"result", "no answer from task_boiler"}};}
-					}
-				}
-
 				//Включение моего термостата
 				else if(command == "PID_thermostat"){
 					if(!j.contains("params"))				response	= {{"result", "Отсутствует params"}};
@@ -283,6 +262,11 @@ void	parse_tcp_message(const int sock)
 					}
 				}
 
+				//Принудительная перезагрузка
+				else if(command == "reboot"){
+					esp_restart();
+				}
+
 				else
 				{
 					response	= {
@@ -301,6 +285,7 @@ void	parse_tcp_message(const int sock)
 
 	//Отправка ответа
 	std::string	msg	= response.dump();
+	ESP_LOGI(TAG, "response: %s", msg.c_str());
 	const char*	buf	= msg.c_str();
 	size_t	buf_len	= msg.length();
 	size_t	to_write = buf_len;

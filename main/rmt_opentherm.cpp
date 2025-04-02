@@ -24,7 +24,7 @@ RMT_Opentherm::RMT_Opentherm(const gpio_num_t pin_in, const gpio_num_t pin_out, 
 		.gpio_num			= pin_in,
 		.clk_src			= RMT_CLK_SRC_DEFAULT,
 		.resolution_hz		= 1000000,
-		.mem_block_symbols	= 128, // amount of RMT symbols that the channel can store at a time
+		.mem_block_symbols	= 64, // amount of RMT symbols that the channel can store at a time
 		.intr_priority		= 0,
 		.flags	= {
 			.invert_in		= false,
@@ -101,129 +101,248 @@ RMT_Opentherm::RMT_Opentherm(const gpio_num_t pin_in, const gpio_num_t pin_out, 
 	rmt_del_encoder(copy_encoder);
 
 	//Нужно секунду подождать, чтобы первый обмен не завершился ошибкой
-	//vTaskDelay будет выполнен в processOT, поэтому сдвиг на 900 мс
-	time_last_receive	= esp_timer_get_time() + 900000;
+	//vTaskDelay будет выполнен в processOT, поэтому сдвиг на 950 мс
+	time_last_receive	= esp_timer_get_time() + 950000;
 }
 
-RMT_Opentherm::Result	RMT_Opentherm::processOT(const uint32_t request, uint32_t* response)
+RMT_Opentherm::Result	RMT_Opentherm::processOT(const uint32_t request, uint32_t* response, std::vector<rmt_symbol_word_t>& received_symbols)
 {
 	Result	out;
 
-	//Ожидание не менее 100 мс после последнего приема
+	//Ожидание не менее 150 мс после последнего приема
 	int64_t	dt	= (esp_timer_get_time() - time_last_receive)/1000;
-	if(dt < 100)
-		vTaskDelay(pdMS_TO_TICKS(100 - dt));
+	if(dt < 150)
+		vTaskDelay(pdMS_TO_TICKS(150 - dt));
 
-	//Включение приема и передача команды
-	rmt_enable(rx_channel);
-	esp_err_t	receive_state	= rmt_receive(rx_channel, rx_symbols_buf, sizeof(rx_symbols_buf), &receive_config);
+	//Передача команды
 	ESP_ERROR_CHECK(rmt_transmit(tx_channel, tx_encoder, &request, sizeof(request), &transmit_config));
 
-	if(receive_state == ESP_OK)
+	//Приём
+	int64_t	receive_time	= esp_timer_get_time();
+	for(;;)
 	{
-		//Ожидание сигнала о завершении приема
-		rmt_rx_done_event_data_t rx_data;
-		if(xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(1500)) == pdPASS)
+		rmt_enable(rx_channel);
+		esp_err_t	receive_state	= rmt_receive(rx_channel, rx_symbols_buf, sizeof(rx_symbols_buf), &receive_config);
+		if(receive_state == ESP_OK)
 		{
-			ESP_LOGW(TAG, "receive done");
-			time_last_receive	= esp_timer_get_time();
-
-			//Проверка, что пришли все 34 бита и все начинаются с 1
-			size_t	slots_count	= 0;
-			bool	all_bits_starts_from_1	= true;
-			for(int i = 0; i < rx_data.num_symbols; i++)
+			//Ожидание сигнала о завершении приема
+			rmt_rx_done_event_data_t rx_data;
+			if(xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(800)) == pdPASS)
 			{
-				if(rx_data.received_symbols[i].duration0 < 700)	slots_count++;
-				else											slots_count	+= 2;
+				//Накопление в ожидании таймаута
+				for(int i = 0; i < rx_data.num_symbols; i++)
+					received_symbols.push_back(rx_data.received_symbols[i]);
 
-				if(rx_data.received_symbols[i].duration1 < 700)	slots_count++;
-				else											slots_count	+= 2;
-
-				if(rx_data.received_symbols[i].level0 == 0)	all_bits_starts_from_1	= false;
-			}
-
-			//Отладочная печать
-			std::ostringstream	ss;
-			ss << "request: 0x" << std::hex << request << std::dec << std::endl;
-			ss << "slots_count: " << slots_count << std::endl;
-			ss << "num_symbols: " << rx_data.num_symbols << std::endl;
-			for(size_t i = 0; i < rx_data.num_symbols; i++)
-			{
-				ss << "(" << rx_data.received_symbols[i].level0 << ": " << rx_data.received_symbols[i].duration0 << "; ";
-				ss << rx_data.received_symbols[i].level1 << ": " << rx_data.received_symbols[i].duration1 << ")" << std::endl;
-			}
-
-			if(mqtt_client && !all_bits_starts_from_1){
-				ss << "Обнаружен level0 = 0" << std::endl;
-				esp_mqtt_client_publish(mqtt_client, (log_topic + "/debug").c_str(), ss.str().c_str(), 0, 0, 0);
-			}
-
-			if(mqtt_client && rx_data.received_symbols[0].duration0 > 700){
-				ss << "Обнаружен duration0 > 700" << std::endl;
-				esp_mqtt_client_publish(mqtt_client, (log_topic + "/debug").c_str(), ss.str().c_str(), 0, 0, 0);
-			}
-
-			if(mqtt_client && rx_data.received_symbols[rx_data.num_symbols-1].duration1 != 0){
-				ss << "Обнаружен конец, не равный 0" << std::endl;
-				esp_mqtt_client_publish(mqtt_client, (log_topic + "/debug").c_str(), ss.str().c_str(), 0, 0, 0);
-			}
-
-			//Разбор ответа
-			uint32_t	resp		= 0;
-			size_t		bits_count	= 0;
-			uint8_t		slot_index	= 1;
-			for(int i = 0; i < rx_data.num_symbols; i++)
-			{
-				const rmt_symbol_word_t&	item	= rx_data.received_symbols[i];
-
-				if(item.duration0 < 700)	slot_index	+= 1;
-				else						slot_index	+= 2;
-
-				if(slot_index >= 2)
-				{
-					bits_count++;
-					if(bits_count != 1)	resp	= (resp << 1) | (item.level0? 1 : 0);
-					if(bits_count > 32) break;
-					slot_index	-= 2;
+				//Фильтрация начальных тактовых импульсов
+				if(rx_data.received_symbols[0].duration0 < 30 ||
+					rx_data.received_symbols[0].duration1 < 30){
+					rmt_disable(rx_channel);
+					continue;
 				}
 
-				if(item.duration1 < 700)	slot_index	+= 1;
-				else						slot_index	+= 2;
+				//Финализация
+				received_symbols.push_back({
+					.duration0	= uint16_t(0.001*(esp_timer_get_time() - receive_time)),
+					.level0		= 0,
+					.duration1	= 8888,
+					.level1		= 1
+				});
 
-				if(slot_index >= 2)
+				// rmt_disable(rx_channel);
+				// continue;
+
+				time_last_receive	= esp_timer_get_time();
+
+				//Проверка, что пришли все 34 бита и все начинаются с 1
+				bool	strange_duration		= false;
+				bool	all_bits_starts_from_1	= true;
+				uint16_t	shift	= 0;	//Сдвиг длительности следующего сигнала
+
+				//Дополнительная проверка на первый импульс, короче нормального
+				if(rx_data.num_symbols > 0 && (rx_data.received_symbols[0].duration0 < 550))
+					rx_data.received_symbols[0].duration0	= 550;
+
+				for(int i = 0; i < rx_data.num_symbols; i++)
 				{
-					bits_count++;
-					if(bits_count != 1)	resp	= (resp << 1) | (item.level1? 1 : 0);
-					if(bits_count > 32) break;
-					slot_index	-= 2;
-				}
-			}
+					//Проверка на начальный уровень
+					if(rx_data.received_symbols[i].level0 == 0){
+						all_bits_starts_from_1	= true;
+						break;
+					}
 
-			*response	= resp;
-			out	= Result::sucsess;
+					//Проверка на короткий импульс
+					if(rx_data.received_symbols[i].duration0 < 150 || rx_data.received_symbols[i].duration1 < 150){
+						if(i < rx_data.num_symbols-1){
+							strange_duration	= true;
+							break;
+						}
+					}
+
+					//Коррекция первого имульса при искаженном предыдущем
+					rx_data.received_symbols[i].duration0	+= shift;
+					shift	= 0;
+
+					//Проверка длительности первого импульса с коррекцией второго
+					uint16_t	len		= rx_data.received_symbols[i].duration0;
+					uint16_t	base1	= 550;
+					uint16_t	base2	= 1060;
+					uint16_t	delta	= 30;
+					if(len < base2-2*delta){
+						if(!(len > base1-delta && len < base1+delta)){
+							//Получено не 550, а 800 или около того
+							rx_data.received_symbols[i].duration0	= base1;
+							rx_data.received_symbols[i].duration1	+= (len - base1);
+						}
+					}
+					else if(!(len > (base2-delta) && len < (base2+delta))){
+						//Получено не 1060, а 1300 или около того
+						rx_data.received_symbols[i].duration0	= base2;
+						rx_data.received_symbols[i].duration1	+= (len - base2);
+					}
+
+					//Проверка длительности второго импульса
+					len	= rx_data.received_symbols[i].duration1;
+					base1	= 470;
+					base2	= 984;
+					if(len < base2-2*delta){
+						if(!(len > base1-delta && len < base1+delta)){
+							shift	= len - base1;
+							rx_data.received_symbols[i].duration1	= base1;
+						}
+					}
+					else if(!(len > base2-delta && len < base2+delta)){
+						shift	= len - base2;
+						rx_data.received_symbols[i].duration1	= base2;
+					}
+				}
+
+				//Отладочная печать
+				std::ostringstream	ss;
+				ss << "request: 0x" << std::hex << request << std::dec << std::endl;
+				for(size_t i = 0; i < rx_data.num_symbols; i++)
+				{
+					ss << "(" << rx_data.received_symbols[i].level0 << ": " << rx_data.received_symbols[i].duration0 << "; ";
+					ss << rx_data.received_symbols[i].level1 << ": " << rx_data.received_symbols[i].duration1 << ")" << std::endl;
+				}
+
+				if(mqtt_client && !all_bits_starts_from_1){
+					ss << "Обнаружен level0 = 0" << std::endl;
+					esp_mqtt_client_publish(mqtt_client, (log_topic + "/debug").c_str(), ss.str().c_str(), 0, 0, 0);
+				}
+
+				if(mqtt_client && strange_duration){
+					ss << "strange_duration" << std::endl;
+					esp_mqtt_client_publish(mqtt_client, (log_topic + "/debug").c_str(), ss.str().c_str(), 0, 0, 0);
+				}
+
+				if(!all_bits_starts_from_1 || strange_duration){
+					*response	= 0;
+					out	= Result::fail;
+					break;
+				}
+
+				// if(mqtt_client){
+				// 	ss << std::endl;
+				// 	esp_mqtt_client_publish(mqtt_client, (log_topic + "/info").c_str(), ss.str().c_str(), 0, 0, 0);
+				// }
+
+				// ESP_LOGI(TAG, "%s", ss.str().c_str());
+
+				//Разбор ответа
+				uint32_t	resp		= 0;
+				size_t		bits_count	= 0;
+				uint8_t		slot_index	= 1;
+				for(int i = 0; i < rx_data.num_symbols; i++)
+				{
+					const rmt_symbol_word_t&	item	= rx_data.received_symbols[i];
+
+					if(item.duration0 < 30)			slot_index	+= 0;
+					else if(item.duration0 < 700)	slot_index	+= 1;
+					else							slot_index	+= 2;
+
+					if(slot_index >= 2)
+					{
+						bits_count++;
+						if(bits_count != 1)	resp	= (resp << 1) | (item.level0? 1 : 0);
+						if(bits_count > 32) break;
+						slot_index	-= 2;
+					}
+
+					if(item.duration1 < 30)			slot_index	+= 0;
+					else if(item.duration1 < 700)	slot_index	+= 1;
+					else							slot_index	+= 2;
+
+					if(slot_index >= 2)
+					{
+						bits_count++;
+						if(bits_count != 1)	resp	= (resp << 1) | (item.level1? 1 : 0);
+						if(bits_count > 32) break;
+						slot_index	-= 2;
+					}
+				}
+
+				*response	= resp;
+				out	= Result::sucsess;
+				break;
+			}
+			else
+			{
+				//Через 0.8 секунды ответ не пришел
+				ESP_LOGW(TAG, "timeout");
+				// if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "timeout", 0, 0, 0);
+				out	= Result::receive_timeout;
+				time_last_receive	= esp_timer_get_time();
+
+				//Финализация
+				received_symbols.push_back({
+					.duration0	= uint16_t(0.001*(esp_timer_get_time() - receive_time)),
+					.level0		= 0,
+					.duration1	= 8888,
+					.level1		= 1
+				});
+
+				break;
+			}
 		}
-		else
-		{
-			//Через 1.5 секунды ответ не пришел
-			ESP_LOGW(TAG, "timeout");
-			out	= Result::receive_timeout;
-			if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "timeout", 0, 0, 0);
+		else if(receive_state == ESP_ERR_INVALID_STATE){
+			ESP_LOGW(TAG, "receive_invalid_state");
+			if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_invalid_state", 0, 0, 0);
+			out	= Result::receive_invalid_state;
+			break;
+		}
+		else if(receive_state == ESP_ERR_INVALID_ARG){
+			ESP_LOGW(TAG, "receive_invalid_arg");
+			if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_invalid_arg", 0, 0, 0);
+			out	= Result::receive_invalid_arg;
+			break;
+		}
+		else if(receive_state == ESP_FAIL){
+			ESP_LOGW(TAG, "receive_fail");
+			if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_fail", 0, 0, 0);
+			out	= Result::receive_fail;
+			break;
+		}
+		else{
+			out	= Result::fail;
+			break;
 		}
 	}
-	else if(receive_state == ESP_ERR_INVALID_STATE){
-		if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_invalid_state", 0, 0, 0);
-		out	= Result::receive_invalid_state;
-	}
-	else if(receive_state == ESP_ERR_INVALID_ARG){
-		if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_invalid_arg", 0, 0, 0);
-		out	= Result::receive_invalid_arg;
-	}
-	else if(receive_state == ESP_FAIL){
-		if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (log_topic + "/log").c_str(), "receive_fail", 0, 0, 0);
-		out	= Result::receive_fail;
-	}
-	else
-		out	= Result::fail;
+
+	//Отладочная печать
+	// std::ostringstream	ss;
+	// ss << "request: 0x" << std::hex << request << std::dec << std::endl;
+	// ss << "num_symbols: " << received_symbols.size() << std::endl;
+	// // ss << "receive_count: " << receive_count << std::endl;
+	// for(const rmt_symbol_word_t& word : received_symbols)
+	// {
+	// 	ss << "(" << word.level0 << ": " << word.duration0 << "; ";
+	// 	ss << word.level1 << ": " << word.duration1 << ")" << std::endl;
+	// }
+
+	// if(mqtt_client){
+	// 	ss << std::endl;
+	// 	esp_mqtt_client_publish(mqtt_client, (log_topic + "/info").c_str(), ss.str().c_str(), 0, 0, 0);
+	// }
 
 	rmt_disable(rx_channel);
 	return out;

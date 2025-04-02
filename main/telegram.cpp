@@ -38,7 +38,7 @@ void	telegram(void* unused)
 	bot.setUsers(SecureConfig::telegram_acsess_list);
 
 	std::string	welcome_string("Esp32 is online");
-	std::string	version_info("v5.2.1");
+	std::string	version_info("v5.5.12");
 	welcome_string += "\n" + version_info;
 
 	//Проверка статуса прошивки
@@ -120,8 +120,11 @@ void	telegram(void* unused)
 				//Надо обновить сообщения, чтоб не вылезло после перезагрузки
 				Telegram_client::Message	firmware_message	= message;	//Надо взять копию, чтоб не слетело после getMessages
 				bot.getMessages(0);
+
+				//Отключение остальных задач
 				RMT_thermo_is_enabled	= false;
-				OT_is_enabled	= false;
+				OT_is_enabled			= false;
+				vTaskDelay(pdMS_TO_TICKS(3000));
 
 				//Прошивка
 				ESP_LOGI("telegram", "Esp32 прошивается...");
@@ -137,9 +140,11 @@ void	telegram(void* unused)
 				{
 					ESP_LOGE("telegram", "Ошибка обновления прошивки: %s", esp_err_to_name(err));
 					bot.sendMessage((std::string("Ошибка обновления прошивки: ") + esp_err_to_name(err)).c_str(), message.chat_id);
+
+					//Восстановление задач
+					RMT_thermo_is_enabled	= true;
+					OT_is_enabled			= true;
 				}
-				RMT_thermo_is_enabled	= true;
-				OT_is_enabled	= true;
 			}
 			else if(message.text.rfind("/ota_verified", 0) == 0)
 			{
@@ -152,6 +157,11 @@ void	telegram(void* unused)
 				bot.getMessages(0);
 				esp_ota_mark_app_invalid_rollback_and_reboot();
 				break;
+			}
+			else if(message.text.rfind("/reboot", 0) == 0)
+			{
+				bot.getMessages(0);
+				esp_restart();
 			}
 			else if(message.text.rfind("/status", 0) == 0)
 			{

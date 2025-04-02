@@ -60,27 +60,26 @@ private:
 		uint8_t		OEMfaultCode = 0;	//Код ошибки
 		uint32_t	diagCode	= 0;	//OEM диагностический код
 		float		ch_temp;			//Температура отопления
-		float		pressure;			//Давление теплоносителя
+		float		dhw_temp;			//Температура горячей воды
 		float		modulation;			//Модуляция горелки, %
+		float		flame_current;		//Ток ионизации
 	}ot_boiler_state;
 
 	//Заданные параметры котла
 	struct ot_boiler_data_t
 	{
-		bool	CH			= true;
-		bool	DHW			= false;
-		bool	SummerMode	= false;
-		float	ch_temp_zad	= 40;		//Заданная температура теплоносителя
-		float	ch_temp_max	= 82;		//Максимальная температура теплоносителя
-		float	ch_mod_max	= 100;		//Максимально допустимая модуляция горелки
-		float	room_temp	= 20;		//Текущая температура в комнате
-		float	room_temp_zad	= 22;	//Заданная температура в комнате
+		bool	CH				= true;
+		bool	DHW				= false;
+		bool	SummerMode		= false;
+		float	ch_temp_zad		= 50;		//Заданная температура теплоносителя
+		float	dhw_temp_zad	= 38;		//Заданная температура горячей воды
+		float	ch_temp_max		= 82;		//Максимальная температура теплоносителя
+		float	ch_mod_max		= 100;		//Максимально допустимая модуляция горелки
 	}ot_boiler_data;
 
 	//Необходимость оповещения
 	bool	is_first_fault	= true;
 	int		error_counter	= 0;
-	float	sended_pressure	= 0;		//Последнее отправленное в MQTT значение
 
 	std::string	boiler_topic;
 	std::string	boiler_OT_topic;
@@ -120,8 +119,8 @@ private:
 	std::string	OT_Status_to_string(const OT_Status& status);
 
 	//Очередь сообщений, которые необходимо повторить
-	enum class RepeatType: uint8_t{set_slave, read_slaveConfig, read_status, read_faultCode, read_diagCode, read_ch_temp, read_pressure, read_modulation,
-		set_ch_temp_zad, set_ch_temp_max, set_ch_mod_max, BLOR, set_room_temperature, set_room_temp_zad};
+	enum class RepeatType: uint8_t{set_slave, read_slaveConfig, read_status, read_faultCode, read_diagCode, read_ch_temp, read_dhw_temp, read_modulation,
+		set_ch_temp_zad, set_dhw_temp_zad, set_ch_temp_max, set_ch_mod_max, BLOR};
 	struct RepeatQueue_t
 	{
 		RepeatType	msg;
@@ -138,23 +137,23 @@ public:
 	void	clear_old_message();
 
 	//Функции обмена конкретными параметрами
-	void	set_slave(int slaveID);
+	void	set_slave();
 	void	read_slaveConfig();
 	void	read_status();
 	void	read_faultCode();
 	void	read_diagCode();
 	void	read_ch_temp();
-	void	read_pressure();
-	void	read_modulation();
+	void	read_dhw_temp();
+	float	read_modulation();
+	float	read_flame_current();
 	void	set_ch_temp_zad(float ch_temp_zad, bool data_invalid_expected = false);
+	void	set_dhw_temp_zad(float dhw_temp_zad, bool data_invalid_expected = false);
 	void	set_ch_temp_max(float ch_temp_max);
 	void	set_ch_mod_max(float ch_mod_max, bool data_invalid_expected = false);
 	void	set_CH(bool CH);
 	void	set_DHW(bool DHW);
 	void	set_SummerMode(bool SummerMode);
 	bool	BLOR();
-	void	set_room_temperature(float temp, bool data_invalid_expected = false);
-	void	set_room_temp_zad(float temp_zad);
 
 	//Функция тестирования обмена
 	json	test_ot_command(json params);

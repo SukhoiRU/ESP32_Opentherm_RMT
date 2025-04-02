@@ -37,9 +37,8 @@ const json*			pControlStatus	= nullptr;
 
 void	boiler_task(void* unused)
 {
-	enum class ControlMode_t: uint8_t {ch_temp, baxi_ampera_thermostat, PID_thermostat};
+	enum class ControlMode_t: uint8_t {ch_temp, PID_thermostat};
 	ControlMode_t	controlMode	= ControlMode_t::ch_temp;	//По умолчанию - теплоноситель
-	uint8_t			room_index	= 1;						//Номер датчика температуры
 
 	OT_Boiler	boiler(pin_ot_in, pin_ot_out, boiler_topic, boiler_OT_topic, slaveID);
 	pBoiler	= &boiler;
@@ -49,8 +48,12 @@ void	boiler_task(void* unused)
 	pControlStatus	= &jsonStatus;
 
 	//Перевод котла в режим Slave
-	boiler.set_slave(slaveID);
+	boiler.read_status();
 	boiler.read_slaveConfig();
+	boiler.set_slave();
+
+	//Заданная температура теплоносителя в режиме без термостата
+	float	ch_temp_zad	= 50;
 
 	//Чтение прошлых настроек
 	nvs_handle_t	nvs_settings;
@@ -61,11 +64,6 @@ void	boiler_task(void* unused)
 			switch(val)
 			{
 				case 1:	{
-					controlMode	= ControlMode_t::baxi_ampera_thermostat;
-					jsonStatus["controlMode"]	= "baxi_ampera_thermostat";
-				}break;
-
-				case 2:	{
 					controlMode	= ControlMode_t::PID_thermostat;
 					jsonStatus["controlMode"]	= "PID_thermostat";
 				}break;
@@ -73,16 +71,12 @@ void	boiler_task(void* unused)
 				default: {
 					controlMode	= ControlMode_t::ch_temp;
 					jsonStatus["controlMode"]	= "Теплоноситель";
+					if(nvs_get_u8(nvs_settings, "ch_temp_zad", &val) == ESP_OK){
+						ch_temp_zad	= val;
+						jsonStatus["ch_temp_zad"]	= ch_temp_zad;
+					}
 				}
 			}
-		}
-
-		if(nvs_get_u8(nvs_settings, "room_index", &val) == ESP_OK)	room_index	= val;
-
-		uint16_t	u16_val;
-		if(nvs_get_u16(nvs_settings, "room_temp_zad", &u16_val) == ESP_OK){
-			float	room_temp_zad	= u16_val/256.;
-			boiler.set_room_temp_zad(room_temp_zad);
 		}
 
 		nvs_close(nvs_settings);
@@ -119,21 +113,23 @@ void	boiler_task(void* unused)
 			continue;
 		}
 
-		//Повтор сообщений с ошибкой обмена
-		size_t	remain_msg	= boiler.repeat_old_messages();
-		if(remain_msg > 50)
-		{
-			//Что-то слишком много накопилось ошибочных сообщений
-			toTelegram*	send	= new toTelegram;
-			send->chat_id		= SecureConfig::telegram_user_id;
-			send->reply_id		= 0;
-			send->text			= "В очереди накопилось более 50 сообщений";
-			xQueueGenericSend(to_telegram_queue, &send, 10, queueSEND_TO_BACK);
+		// //Повтор сообщений с ошибкой обмена
+		// size_t	remain_msg	= boiler.repeat_old_messages();
+		// if(remain_msg > 50)
+		// {
+		// 	//Что-то слишком много накопилось ошибочных сообщений
+		// 	toTelegram*	send	= new toTelegram;
+		// 	send->chat_id		= SecureConfig::telegram_user_id;
+		// 	send->reply_id		= 0;
+		// 	send->text			= "В очереди накопилось более 50 сообщений";
+		// 	xQueueGenericSend(to_telegram_queue, &send, 10, queueSEND_TO_BACK);
 
-			boiler.clear_old_message();
-		}
+		// 	boiler.clear_old_message();
+		// }
+		boiler.clear_old_message();
 
 		//Ежесекундный опрос состояния
+		boiler.read_status();
 		boiler.read_modulation();
 
 		//Периодический опрос датчиков котла
@@ -141,9 +137,9 @@ void	boiler_task(void* unused)
 		{
 			periodical_time	= esp_timer_get_time();
 
-			boiler.read_status();
+			boiler.read_flame_current();
 			boiler.read_ch_temp();
-			boiler.read_pressure();
+			boiler.read_dhw_temp();
 		}
 
 		//Периодическая отправка всего состояния в MQTT
@@ -159,13 +155,9 @@ void	boiler_task(void* unused)
 			thermostat_time	= esp_timer_get_time();
 			switch(controlMode)
 			{
-				case ControlMode_t::baxi_ampera_thermostat:
+				case ControlMode_t::ch_temp:
 				{
-					//Отправка текущей температуры в комнате
-					if(thermometers.size() > room_index){
-						float	t	= thermometers.at(room_index).value;
-						boiler.set_room_temperature(t);
-					}
+					boiler.set_ch_temp_zad(ch_temp_zad, true);
 				}break;
 
 				case ControlMode_t::PID_thermostat:
@@ -175,6 +167,7 @@ void	boiler_task(void* unused)
 					float	ch_mod_max	= 0;
 					for(RoomThermostat* room : rooms){
 						room->Life(thermostat_period);
+						jsonStatus["params"]["PID"]	= room->getPID_params();
 						if(room->out.ch_temp_zad > ch_temp_zad)
 							ch_temp_zad	= room->out.ch_temp_zad;
 						if(room->out.mod_max > ch_mod_max)
@@ -184,7 +177,7 @@ void	boiler_task(void* unused)
 					//Управление теплоносителем
 					if(ch_temp_zad != 0){
 						boiler.set_ch_temp_zad(ch_temp_zad, true);
-						boiler.set_ch_mod_max(ch_mod_max, true);
+						// boiler.set_ch_mod_max(ch_mod_max, true);
 					}
 				}break;
 
@@ -226,7 +219,6 @@ void	boiler_task(void* unused)
 							{"params", j}
 						};
 
-						boiler.set_room_temperature(0, true);
 						xQueueGenericSend(to_telegram_queue, &send, 10, queueSEND_TO_BACK);
 					}
 				}break;
@@ -268,13 +260,24 @@ void	boiler_task(void* unused)
 				case TCP_message_t::set_boiler_data:{
 					answer->response	= boiler.set_boiler_data(tcp_msg->params);
 
+					//Запоминание заданной температуры
+					if(tcp_msg->params.contains("ch_temp_zad") && tcp_msg->params.at("ch_temp_zad").is_number_integer()){
+						int	ch_temp_zad	= tcp_msg->params.at("ch_temp_zad").get<int>();
+						nvs_handle_t	nvs_settings;
+						if(nvs_open("boiler_task", NVS_READONLY, &nvs_settings) == ESP_OK){
+							nvs_set_u8(nvs_settings, "ch_temp_zad", static_cast<uint8_t>(ch_temp_zad));
+							nvs_commit(nvs_settings);
+							nvs_close(nvs_settings);
+						}
+					}
+
 					//Отключение термостата котла
 					controlMode			= ControlMode_t::ch_temp;
 					jsonStatus	= {
 						{"controlMode", "Теплоноситель"},
 						{"params", tcp_msg->params}
 					};
-					boiler.set_room_temperature(0, true);
+
 					xQueueGenericSend(to_TCP_ot_queue, &answer, 10, queueSEND_TO_FRONT);
 				}break;
 
@@ -283,80 +286,19 @@ void	boiler_task(void* unused)
 					xQueueGenericSend(to_TCP_ot_queue, &answer, 10, queueSEND_TO_FRONT);
 				}break;
 
-				case TCP_message_t::baxi_ampera_thermostat:{
-					//Проверка наличия всех полей
-					if(!tcp_msg->params.contains("room_name") ||
-						!tcp_msg->params.contains("room_temp_zad") ||
-						!tcp_msg->params.contains("room_mod_max"))				answer->response	= {{"fail", "not all params present"}};
-					//Проверка типов всех полей
-					else if(!tcp_msg->params.at("room_name").is_string() ||
-							!tcp_msg->params.at("room_temp_zad").is_number() ||
-							!tcp_msg->params.at("room_mod_max").is_number())	answer->response	= {{"fail", "params types incorrect"}};
-					//Все параметры в норме
-					else{
-						std::string	room_name	= tcp_msg->params.at("room_name").get<std::string>();
-						float	room_temp_zad	= tcp_msg->params.at("room_temp_zad").get<float>();
-						float	room_mod_max	= tcp_msg->params.at("room_mod_max").get<float>();
-
-						//Поиск индекса термометра, соответствующего имени
-						bool	bFound	= false;
-						for(size_t i = 0; i < thermometers.size(); i++){
-							const thermo_info& info	= thermometers.at(i);
-							if(info.name == room_name){
-								room_index	= i;
-								bFound	= true;
-								break;
-							}
-						}
-
-						if(bFound){
-							controlMode	= ControlMode_t::baxi_ampera_thermostat;
-							jsonStatus	= {
-								{"controlMode", "baxi_ampera_thermostat"},
-								{"params", tcp_msg->params}
-							};
-
-							boiler.set_room_temperature(thermometers.at(room_index).value);
-							boiler.set_room_temp_zad(room_temp_zad);
-							boiler.set_ch_mod_max(room_mod_max);
-
-							nvs_handle_t	nvs_settings;
-							if(nvs_open("boiler_task", NVS_READONLY, &nvs_settings) == ESP_OK){
-								nvs_set_u8(nvs_settings, "controlMode", static_cast<uint8_t>(controlMode));
-								nvs_set_u16(nvs_settings, "room_temp_zad", uint16_t(room_temp_zad*256));
-								nvs_set_u8(nvs_settings, "room_index", room_index);
-
-								nvs_commit(nvs_settings);
-								nvs_close(nvs_settings);
-							}
-
-							answer->response	= {
-								{"status", "ok"},
-								{"room_index", room_index}
-							};
-						}
-						else{
-							answer->response	= {
-								{"fail", "name not found"},
-								{"name", room_name}
-							};
-						}
-					}
-
-					xQueueGenericSend(to_TCP_ot_queue, &answer, 10, queueSEND_TO_FRONT);
-				}break;
-
 				case TCP_message_t::PID_thermostat:{
 					//Проверка наличия всех полей
 					if(!tcp_msg->params.contains("room_name") ||
 						!tcp_msg->params.contains("radiator_name") ||
 						!tcp_msg->params.contains("room_temp_zad") ||
+						!tcp_msg->params.contains("dhw_temp_zad") ||
 						!tcp_msg->params.contains("PID") ||
 						!tcp_msg->params.contains("room_mod_max"))				answer->response	= {{"fail", "not all params present"}};
 					//Проверка типов всех полей
 					else if(!tcp_msg->params.at("room_name").is_string() ||
 							!tcp_msg->params.at("radiator_name").is_string() ||
 							!tcp_msg->params.at("room_temp_zad").is_number() ||
+							!tcp_msg->params.at("dhw_temp_zad").is_number() ||
 							!tcp_msg->params.at("PID").is_object() ||
 							!tcp_msg->params.at("room_mod_max").is_number())	answer->response	= {{"fail", "params types incorrect"}};
 					//Все параметры в норме
@@ -364,8 +306,12 @@ void	boiler_task(void* unused)
 						std::string	room_name	= tcp_msg->params.at("room_name").get<std::string>();
 						std::string	rad_name	= tcp_msg->params.at("radiator_name").get<std::string>();
 						float	room_temp_zad	= tcp_msg->params.at("room_temp_zad").get<float>();
+						float	dhw_temp_zad	= tcp_msg->params.at("dhw_temp_zad").get<float>();
 						float	room_mod_max	= tcp_msg->params.at("room_mod_max").get<float>();
 						json	PID_params		= tcp_msg->params.at("PID");
+
+						//Установка заданной температуры горячей воды
+						boiler.set_dhw_temp_zad(dhw_temp_zad);
 
 						//Поиск индекса термометра, соответствующего имени
 						bool	bFound		= false;
@@ -413,6 +359,7 @@ void	boiler_task(void* unused)
 									{"room_name", room_name},
 									{"radiator_name", rad_name},
 									{"room_temp_zad", room_temp_zad},
+									{"dhw_temp_zad", dhw_temp_zad},
 									{"room_mod_max", room_mod_max},
 									{"PID", room->getPID_params()}	//Дело в том, что прийти может только одно значение из списка параметров, поэтому обновлять нужно всё
 								}}
@@ -452,6 +399,8 @@ void	boiler_task(void* unused)
 
 			if(tcp_msg)	delete tcp_msg;
 		}
-		vTaskDelay(pdMS_TO_TICKS(1000));
+
+		//Задержка выполняется в process_OT, поэтому здеь не нужна
+		// vTaskDelay(pdMS_TO_TICKS(1000));
 	}
 }

@@ -4,7 +4,7 @@
 void	tcp_server(void* unused);
 bool	tcp_server_is_running();
 
-enum class TCP_message_t : uint8_t {set_boiler_data, BLOR, test_ot_command, baxi_ampera_thermostat, PID_thermostat};
+enum class TCP_message_t : uint8_t {set_boiler_data, BLOR, test_ot_command, PID_thermostat};
 
 //Структуры для очередей обмена сообщениями с OpenTherm
 struct	fromTCP_to_ot

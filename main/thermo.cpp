@@ -2,7 +2,6 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
-#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -153,6 +152,7 @@ void	thermo(void* unused)
 			{
 				float	value;
 				info.error_code	= ds18b20_get_temperature(info.device, &value);
+				if(value == 85. || value == -127)	info.error_code	= 85;
 				if(info.error_code)
 				{
 					info.errors_count++;

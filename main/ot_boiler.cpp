@@ -112,7 +112,8 @@ OT_Boiler::OT_Response	OT_Boiler::processOT(const Command cmd, const uint8_t id,
 
 	//Отправка команды
 	OT_Message_t	response;
-	RMT_Opentherm::Result	response_status	= rmt_ot->processOT(request.all, &response.all);
+	std::vector<rmt_symbol_word_t>	received_symbols;
+	RMT_Opentherm::Result	response_status	= rmt_ot->processOT(request.all, &response.all, received_symbols);
 
 	OT_Response	out;
 	out.data		= 0;
@@ -147,6 +148,23 @@ OT_Boiler::OT_Response	OT_Boiler::processOT(const Command cmd, const uint8_t id,
 					if(error_counter >= 60)
 						sendNotification("Восстановление связи по цифровой шине");
 					error_counter	= 0;
+
+					// //Отладочная печать
+					// std::ostringstream	ss;
+					// ss << "request id: " << int(id) << std::endl;
+					// ss << "request: 0x" << std::hex << request.all << std::dec << std::endl;
+					// ss << "response: 0x" << std::hex << out.data << std::dec << std::endl;
+					// ss << "num_symbols: " << received_symbols.size() << std::endl;
+					// for(const rmt_symbol_word_t& word : received_symbols)
+					// {
+					// 	ss << "(" << word.level0 << ": " << word.duration0 << "; ";
+					// 	ss << word.level1 << ": " << word.duration1 << ")" << std::endl;
+					// }
+
+					// if(mqtt_client){
+					// 	ss << std::endl;
+					// 	esp_mqtt_client_publish(mqtt_client, (boiler_OT_topic + "log_info").c_str(), ss.str().c_str(), 0, 0, 0);
+					// }
 				}
 			}
 		}
@@ -159,7 +177,7 @@ OT_Boiler::OT_Response	OT_Boiler::processOT(const Command cmd, const uint8_t id,
 		out.status	= OT_Status::rx_invalid;
 	}
 
-	if(out.status != OT_Status::sucsess){
+	if(out.status != OT_Status::sucsess && out.status != OT_Status::timeout){
 		//Ошибка опроса котла
 		json	fails{
 			{"counters", {
@@ -194,6 +212,12 @@ OT_Boiler::OT_Response	OT_Boiler::processOT(const Command cmd, const uint8_t id,
 			{"status", OT_Status_to_string(out.status)}
 		};
 
+		char	buf[512];
+		for(const rmt_symbol_word_t& word : received_symbols){
+			sprintf(buf, "(%d: %d; %d: %d)", word.level0, word.duration0, word.level1, word.duration1);
+			fails["symbols"].push_back(buf);
+		}
+
 		if(mqtt_client)
 			esp_mqtt_client_publish(mqtt_client, (boiler_OT_topic + "fails").c_str(), fails.dump().c_str(), 0, 0, 0);
 
@@ -221,20 +245,19 @@ size_t	OT_Boiler::repeat_old_messages()
 		{
 			switch(item.msg)
 			{
-				case RepeatType::set_slave:				set_slave(slaveID);									break;
+				case RepeatType::set_slave:				set_slave();										break;
 				case RepeatType::read_slaveConfig:		read_slaveConfig();									break;
 				case RepeatType::read_status:			read_status();										break;
 				case RepeatType::read_faultCode:		read_faultCode();									break;
 				case RepeatType::read_diagCode:			read_diagCode();									break;
 				case RepeatType::read_ch_temp:			read_ch_temp();										break;
-				case RepeatType::read_pressure:			read_pressure();									break;
+				case RepeatType::read_dhw_temp:			read_dhw_temp();									break;
 				case RepeatType::read_modulation:		read_modulation();									break;
 				case RepeatType::set_ch_temp_zad:		set_ch_temp_zad(ot_boiler_data.ch_temp_zad);		break;
+				case RepeatType::set_dhw_temp_zad:		set_dhw_temp_zad(ot_boiler_data.dhw_temp_zad);		break;
 				case RepeatType::set_ch_temp_max:		set_ch_temp_max(ot_boiler_data.ch_temp_max);		break;
 				case RepeatType::set_ch_mod_max:		set_ch_mod_max(ot_boiler_data.ch_mod_max);			break;
 				case RepeatType::BLOR:					BLOR();												break;
-				case RepeatType::set_room_temperature:	set_room_temperature(ot_boiler_data.room_temp);		break;
-				case RepeatType::set_room_temp_zad:		set_room_temp_zad(ot_boiler_data.room_temp_zad);	break;
 
 				default:
 					break;
@@ -250,14 +273,13 @@ size_t	OT_Boiler::repeat_old_messages()
 				case OT_Boiler::RepeatType::read_faultCode:			msg += "read_faultCode";		break;
 				case OT_Boiler::RepeatType::read_diagCode:			msg += "read_diagCode";			break;
 				case OT_Boiler::RepeatType::read_ch_temp:			msg += "read_ch_temp";			break;
-				case OT_Boiler::RepeatType::read_pressure:			msg += "read_pressure";			break;
+				case OT_Boiler::RepeatType::read_dhw_temp:			msg += "read_dhw_temp";			break;
 				case OT_Boiler::RepeatType::read_modulation:		msg += "read_modulation";		break;
 				case OT_Boiler::RepeatType::set_ch_temp_zad:		msg += "set_ch_temp_zad";		break;
+				case OT_Boiler::RepeatType::set_dhw_temp_zad:		msg += "set_dhw_temp_zad";		break;
 				case OT_Boiler::RepeatType::set_ch_temp_max:		msg += "set_ch_temp_max";		break;
 				case OT_Boiler::RepeatType::set_ch_mod_max:			msg += "set_ch_mod_max";		break;
 				case OT_Boiler::RepeatType::BLOR:					msg += "BLOR";					break;
-				case OT_Boiler::RepeatType::set_room_temp_zad:		msg += "set_room_temp_zad";		break;
-				case OT_Boiler::RepeatType::set_room_temperature:	msg += "set_room_temperature";	break;
 			}
 			sendNotification(msg);
 		}
@@ -284,7 +306,7 @@ void	OT_Boiler::clear_old_message()
 		repeat_queue.pop();
 }
 
-void	OT_Boiler::set_slave(int slaveID)
+void	OT_Boiler::set_slave()
 {
 	OT_Response	slave	= processOT(Command::write, 2, slaveID);
 	if(slave.status	!= OT_Status::sucsess)
@@ -360,7 +382,7 @@ void	OT_Boiler::read_status()
 				is_first_fault		= false;
 
 				read_faultCode();
-				read_diagCode();
+				// read_diagCode();
 
 				std::ostringstream ss;
 				ss << "*Ошибка котла!*" << std::endl;
@@ -382,7 +404,7 @@ void	OT_Boiler::read_status()
 			if(!is_first_fault)
 			{
 				read_faultCode();
-				read_diagCode();
+				// read_diagCode();
 				sendNotification("Ошибка сброшена");
 			}
 			is_first_fault	= true;
@@ -450,38 +472,34 @@ void	OT_Boiler::read_ch_temp()
 			if(mqtt_client)
 			{
 				char	value[16];
-				sprintf(value, "%.0f", ch_temp);
+				sprintf(value, "%.1f", ch_temp);
 				esp_mqtt_client_publish(mqtt_client, (boiler_topic + "ch_temp").c_str(), value, 0, 0, 0);
 			}
 		}
 	}
 }
 
-void	OT_Boiler::read_pressure()
+void	OT_Boiler::read_dhw_temp()
 {
-	//Опрос давления теплоносителя
-	OT_Response	resp	= processOT(Command::read, 18, 0);
+	//Опрос температуры теплоносителя
+	OT_Response	resp	= processOT(Command::read, 26, 0);
 	if(resp.status == OT_Status::sucsess)
 	{
-		float	pressure	= resp.get_float();
-		if(pressure && pressure != ot_boiler_state.pressure)
+		float	dhw_temp	= resp.get_float();
+		if(dhw_temp != ot_boiler_state.dhw_temp)
 		{
-			ot_boiler_state.pressure	= pressure;
-
-			//Отправка в MQTT с фильтрацией дребезга
-			float	delta	= pressure - sended_pressure;
-			if(mqtt_client && abs(delta) > 0.01)
+			ot_boiler_state.dhw_temp	= dhw_temp;
+			if(mqtt_client)
 			{
-				sended_pressure	= pressure;
 				char	value[16];
-				sprintf(value, "%.3f", pressure);
-				esp_mqtt_client_publish(mqtt_client, (boiler_topic + "pressure").c_str(), value, 0, 0, 0);
+				sprintf(value, "%.1f", dhw_temp);
+				esp_mqtt_client_publish(mqtt_client, (boiler_topic + "dhw_temp").c_str(), value, 0, 0, 0);
 			}
 		}
 	}
 }
 
-void	OT_Boiler::read_modulation()
+float	OT_Boiler::read_modulation()
 {
 	//Опрос модуляции горелки
 	OT_Response	resp	= processOT(Command::read, 17, 0);
@@ -494,11 +512,39 @@ void	OT_Boiler::read_modulation()
 			if(mqtt_client)
 			{
 				char	value[16];
-				sprintf(value, "%.0f", modulation);
+				sprintf(value, "%.2f", modulation);
 				esp_mqtt_client_publish(mqtt_client, (boiler_topic + "modulation").c_str(), value, 0, 0, 0);
 			}
 		}
+
+		return modulation;
 	}
+
+	return 0;
+}
+
+float	OT_Boiler::read_flame_current()
+{
+	//Опрос тока ионизации
+	OT_Response	resp	= processOT(Command::read, 36, 0);
+	if(resp.status == OT_Status::sucsess)
+	{
+		float	flame_current	= resp.get_float();
+		if(flame_current != ot_boiler_state.modulation)
+		{
+			ot_boiler_state.flame_current	= flame_current;
+			if(mqtt_client)
+			{
+				char	value[16];
+				sprintf(value, "%.2f", flame_current);
+				esp_mqtt_client_publish(mqtt_client, (boiler_topic + "flame_current").c_str(), value, 0, 0, 0);
+			}
+		}
+
+		return flame_current;
+	}
+
+	return 0;
 }
 
 void	OT_Boiler::set_ch_temp_zad(float ch_temp_zad, bool data_invalid_expected /* = false */)
@@ -529,6 +575,37 @@ void	OT_Boiler::set_ch_temp_zad(float ch_temp_zad, bool data_invalid_expected /*
 	}
 	else
 		repeat(RepeatType::set_ch_temp_zad);
+}
+
+void	OT_Boiler::set_dhw_temp_zad(float dhw_temp_zad, bool data_invalid_expected /* = false */)
+{
+	//Установка заданной температуры теплоносителя
+	if(dhw_temp_zad < 0.)	dhw_temp_zad	= 0;
+	if(dhw_temp_zad > 100.)	dhw_temp_zad	= 100.;
+	ot_boiler_data.dhw_temp_zad	= dhw_temp_zad;
+	ot_boiler_data.DHW			= dhw_temp_zad > 0;
+
+	//Запоминание
+	nvs_handle_t	nvs_settings;
+	if(nvs_open("boiler", NVS_READWRITE, &nvs_settings) == ESP_OK){
+		nvs_set_u8(nvs_settings, "dhw_temp_zad", ot_boiler_data.dhw_temp_zad);
+		nvs_commit(nvs_settings);
+		nvs_close(nvs_settings);
+	}
+
+	//Выполнение запроса
+	OT_Response	resp	= processOT(Command::write, 56, uint16_t(ot_boiler_data.dhw_temp_zad*256.f), data_invalid_expected);
+	if(resp.status == OT_Status::sucsess)
+	{
+		if(mqtt_client)
+		{
+			char	value[16];
+			sprintf(value, "%.0f", dhw_temp_zad);
+			esp_mqtt_client_publish(mqtt_client, (boiler_topic + "dhw_temp_zad").c_str(), value, 0, 0, 0);
+		}
+	}
+	else
+		repeat(RepeatType::set_dhw_temp_zad);
 }
 
 void	OT_Boiler::set_ch_temp_max(float ch_temp_max)
@@ -594,7 +671,9 @@ void	OT_Boiler::set_ch_mod_max(float ch_mod_max, bool data_invalid_expected /* =
 bool	OT_Boiler::BLOR()
 {
 	//Boiler Lock-out  Reset
-	OT_Response	resp	= processOT(Command::write, 4, 1);
+	OT_Response	resp	= processOT(Command::write, 4, 1);	//Boiler Lock-out Reset request
+	resp	= processOT(Command::write, 4, 10);				//Request to reset service request flag
+	resp	= processOT(Command::write, 4, 0);				//Back to Normal oparation mode
 	if(resp.status == OT_Status::sucsess)
 	{
 		if(mqtt_client)	esp_mqtt_client_publish(mqtt_client, (boiler_topic + "BLOR").c_str(), (resp.data > 128 ? "done" : "failed"), 0, 0, 0);
@@ -623,7 +702,7 @@ void	OT_Boiler::set_CH(bool CH)
 
 	//Установка вместе с модуляцией
 	read_status();
-	set_ch_mod_max(ot_boiler_data.ch_mod_max);
+	// set_ch_mod_max(ot_boiler_data.ch_mod_max);
 }
 
 void	OT_Boiler::set_DHW(bool DHW)
@@ -693,7 +772,6 @@ void	OT_Boiler::print_status(std::ostringstream& ss) const
 		ss << "*Горелка* откл" << std::endl;
 	ss << "*Теплоноситель*  " << ot_boiler_state.ch_temp << " ℃" << std::endl;
 	ss << "*Заданная*  " << ot_boiler_data.ch_temp_zad << " ℃" << std::endl;
-	ss << "*Давление*  " << ot_boiler_state.pressure << " атм" << std::endl;
 
 	ss << "*failsCounter*" << std::endl;
 	ss << "```" << std::endl;
@@ -716,12 +794,14 @@ json	OT_Boiler::json_status() const
 		{"centralHeating", ot_boiler_state.centralHeating},
 		{"dhw",  ot_boiler_state.dhw},
 		{"flame",  ot_boiler_state.flame},
+		{"flame_current",  ot_boiler_state.flame_current},
 		{"fault",  ot_boiler_state.fault},
 		{"faultFlags",  ot_boiler_state.faultFlags.all},
 		{"faultCode",  ot_boiler_state.OEMfaultCode},
 		{"diagCode",  ot_boiler_state.diagCode},
 		{"ch_temp",  ot_boiler_state.ch_temp},
-		{"pressure",  ot_boiler_state.pressure},
+		{"dhw_temp",  ot_boiler_state.dhw_temp},
+		{"dhw_temp_zad", ot_boiler_data.dhw_temp_zad},
 		{"modulation",  ot_boiler_state.modulation},
 		{"ch_temp_zad", ot_boiler_data.ch_temp_zad},
 		{"ch_temp_max", ot_boiler_data.ch_temp_max},
@@ -744,7 +824,7 @@ json	OT_Boiler::json_status() const
 
 void	OT_Boiler::log_head(std::ostringstream& ss) const
 {
-	ss << "CH; DHW; flame; ch_temp; pressure; modulation; ch_temp_zad; ";
+	ss << "CH; DHW; flame; ch_temp; dhw_temp; modulation; ch_temp_zad; dhw_temp_zad";
 }
 
 void	OT_Boiler::log_data(std::ostringstream& ss) const
@@ -753,9 +833,10 @@ void	OT_Boiler::log_data(std::ostringstream& ss) const
 	ss << (ot_boiler_state.dhw ? "1" : "0") << "; ";
 	ss << (ot_boiler_state.flame ? "1" : "0") << "; ";
 	ss << ot_boiler_state.ch_temp << "; ";
-	ss << ot_boiler_state.pressure << "; ";
+	ss << ot_boiler_state.dhw_temp << "; ";
 	ss << ot_boiler_state.modulation << "; ";
 	ss << ot_boiler_data.ch_temp_zad << "; ";
+	ss << ot_boiler_data.dhw_temp_zad << "; ";
 }
 
 bool	OT_Boiler::openTherm_is_correct() const
@@ -790,6 +871,12 @@ json	OT_Boiler::set_boiler_data(const json& j)
 		res["ch_temp_zad"]	= "ok";
 	}
 
+	if(j.contains("dhw_temp_zad") && j.at("dhw_temp_zad").is_number_integer())
+	{
+		set_dhw_temp_zad(j.at("dhw_temp_zad").get<int>());
+		res["dhw_temp_zad"]	= "ok";
+	}
+
 	if(j.contains("ch_temp_max") && j.at("ch_temp_max").is_number_integer())
 	{
 		set_ch_temp_max(j.at("ch_temp_max").get<int>());
@@ -798,7 +885,7 @@ json	OT_Boiler::set_boiler_data(const json& j)
 
 	if(j.contains("ch_mod_max") && j.at("ch_mod_max").is_number_integer())
 	{
-		set_ch_mod_max(j.at("ch_mod_max").get<int>());
+		// set_ch_mod_max(j.at("ch_mod_max").get<int>());
 		res["ch_mod_max"]	= "ok";
 	}
 
@@ -823,12 +910,16 @@ void	OT_Boiler::send_all_mqtt()
 		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "diagCode").c_str(), value, 0, 0, 0);
 		sprintf(value, "%.0f", ot_boiler_state.ch_temp);
 		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "ch_temp").c_str(), value, 0, 0, 0);
-		sprintf(value, "%.3f", ot_boiler_state.pressure);
-		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "pressure").c_str(), value, 0, 0, 0);
-		sprintf(value, "%.0f", ot_boiler_state.modulation);
+		sprintf(value, "%.0f", ot_boiler_state.dhw_temp);
+		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "dhw_temp").c_str(), value, 0, 0, 0);
+		sprintf(value, "%.2f", ot_boiler_state.modulation);
 		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "modulation").c_str(), value, 0, 0, 0);
+		sprintf(value, "%.2f", ot_boiler_state.flame_current);
+		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "flame_current").c_str(), value, 0, 0, 0);
 		sprintf(value, "%.0f", ot_boiler_data.ch_temp_zad);
 		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "ch_temp_zad").c_str(), value, 0, 0, 0);
+		sprintf(value, "%.0f", ot_boiler_data.dhw_temp_zad);
+		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "dhw_temp_zad").c_str(), value, 0, 0, 0);
 		sprintf(value, "%.0f", ot_boiler_data.ch_temp_max);
 		esp_mqtt_client_publish(mqtt_client, (boiler_topic + "ch_temp_max").c_str(), value, 0, 0, 0);
 		sprintf(value, "%.0f", ot_boiler_data.ch_mod_max);
@@ -893,50 +984,6 @@ std::string	OT_Boiler::OT_Status_to_string(const OT_Boiler::OT_Status& status)
 		case OT_Status::responseID_fail:	return "responseID_fail";
 		default:							return "wrong_status";
 	}
-}
-
-void	OT_Boiler::set_room_temperature(float temp, bool expect_data_invalid /* = false */)
-{
-	//Установка тукущей температуры в комнате
-	if(temp < -40.)	temp	= -40;
-	if(temp > 127.)	temp	= 127.;
-	ot_boiler_data.room_temp	= temp;
-
-	//Выполнение запроса
-	OT_Response	resp	= processOT(Command::write, 24, uint16_t(temp*256.f), expect_data_invalid);
-	if(resp.status == OT_Status::sucsess)
-	{
-		if(mqtt_client)
-		{
-			char	value[16];
-			sprintf(value, "%.0f", temp);
-			esp_mqtt_client_publish(mqtt_client, (boiler_topic + "room_temp").c_str(), value, 0, 0, 0);
-		}
-	}
-	else
-		repeat(RepeatType::set_room_temperature);
-}
-
-void	OT_Boiler::set_room_temp_zad(float temp_zad)
-{
-	//Установка тукущей температуры в комнате
-	if(temp_zad < -40.)	temp_zad	= -40;
-	if(temp_zad > 127.)	temp_zad	= 127.;
-	ot_boiler_data.room_temp_zad	= temp_zad;
-
-	//Выполнение запроса
-	OT_Response	resp	= processOT(Command::write, 16, uint16_t(temp_zad*256.f));
-	if(resp.status == OT_Status::sucsess)
-	{
-		if(mqtt_client)
-		{
-			char	value[16];
-			sprintf(value, "%.0f", temp_zad);
-			esp_mqtt_client_publish(mqtt_client, (boiler_topic + "room_temp_zad").c_str(), value, 0, 0, 0);
-		}
-	}
-	else
-		repeat(RepeatType::set_room_temp_zad);
 }
 
 bool	OT_Boiler::is_CH_on()

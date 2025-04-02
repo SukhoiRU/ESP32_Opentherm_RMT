@@ -631,7 +631,15 @@ esp_err_t	Telegram_client::update_firmware(const Message& message)
 					memset(&ota_config, 0, sizeof(ota_config));
 					ota_config.http_config = &config;
 
+					//Закрытие существующего подключения
+					esp_http_client_close(client);
+					esp_http_client_cleanup(client);
+
 					err	= esp_https_ota(&ota_config);
+					if(err != ESP_OK){
+						//Восстановление подключения к telegram в случае ошибки обновления
+						create_client();
+					}
 				}
 				else
 					return ESP_FAIL;

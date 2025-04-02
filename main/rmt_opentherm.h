@@ -18,7 +18,7 @@ public:
 	explicit RMT_Opentherm(const gpio_num_t pin_in, const gpio_num_t pin_out, const std::string& topic);
 
 	enum class Result: uint8_t{sucsess, receive_timeout, receive_invalid_state, receive_invalid_arg, receive_fail, fail};
-	Result	processOT(const uint32_t request, uint32_t* response);
+	Result	processOT(const uint32_t request, uint32_t* response, std::vector<rmt_symbol_word_t>& received_symbols);
 };
 
 #endif	//RMT_OPENTHERM_H
